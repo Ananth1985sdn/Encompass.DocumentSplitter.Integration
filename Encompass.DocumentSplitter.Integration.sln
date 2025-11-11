@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.13.35931.197 d17.13
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Encompass.DocumentSplitter.Integration", "Encompass.DocumentSplitter.Integration.csproj", "{39F310D4-1630-481F-A104-FE82D42B83CB}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{39F310D4-1630-481F-A104-FE82D42B83CB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{39F310D4-1630-481F-A104-FE82D42B83CB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{39F310D4-1630-481F-A104-FE82D42B83CB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{39F310D4-1630-481F-A104-FE82D42B83CB}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {5DA012E2-1CD7-409C-A7A4-50F8A9D0201A}
+	EndGlobalSection
+EndGlobal

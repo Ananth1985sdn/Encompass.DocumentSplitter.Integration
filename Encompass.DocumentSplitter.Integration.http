@@ -1,0 +1,6 @@
+@Encompass.DocumentSplitter.Integration_HostAddress = http://localhost:5201
+
+GET {{Encompass.DocumentSplitter.Integration_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
