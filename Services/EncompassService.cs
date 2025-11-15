@@ -14,17 +14,18 @@ namespace Encompass.DocumentSplitter.Integration.Services
         private readonly HttpClient _httpClient;
         private readonly IMemoryCache _cache;
         private const string TokenCacheKey = "EncompassAccessToken";
-        public EncompassService(IOptions<EncompassSettings> options, IMemoryCache cache, HttpClient? httpClient = null)
+        private readonly IWebHostEnvironment _env;
+        public EncompassService(IOptions<EncompassSettings> options, IMemoryCache cache, IWebHostEnvironment env,HttpClient? httpClient = null)
         {
             _settings = options.Value;
             _httpClient = httpClient ?? new HttpClient();
             _cache = cache;
+            _env = env;
         }
         public string HealthCheck()
         {
             return "Encompass Document Splitter Integration is running.";
         }
-
         public async Task<string> GetEncompassTokenAsync()
         {
             if (_cache.TryGetValue(TokenCacheKey, out string accessToken))
@@ -48,7 +49,7 @@ namespace Encompass.DocumentSplitter.Integration.Services
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
-            var tokenResponse = JsonSerializer.Deserialize<TokenResponse>(json,new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            var tokenResponse = JsonSerializer.Deserialize<TokenResponse>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
 
             if (string.IsNullOrWhiteSpace(tokenResponse?.AccessToken))
@@ -61,7 +62,6 @@ namespace Encompass.DocumentSplitter.Integration.Services
 
             return accessToken;
         }
-
         public async Task UploadToEfolderAsync(DocumentUploadRequest request)
         {
             if (request == null)
@@ -135,7 +135,6 @@ namespace Encompass.DocumentSplitter.Integration.Services
             var uploadUrl = uploadDoc.RootElement.GetProperty("uploadUrl").GetString();
             var authHeader = uploadDoc.RootElement.GetProperty("authorizationHeader").GetString();
 
-            // STEP 3: Upload File
             using var fileStream = File.OpenRead(request.FilePath);
             using var uploadClient = new HttpClient();
             using var uploadRequest = new HttpRequestMessage(HttpMethod.Put, uploadUrl)
@@ -159,6 +158,144 @@ namespace Encompass.DocumentSplitter.Integration.Services
 
             Console.WriteLine($"✅ Successfully uploaded {request.FilePath} to Encompass eFolder.");
         }
+        public async Task<byte[]?> GetLoanFileAsync(string loanId)
+        {
+            if (!_cache.TryGetValue(TokenCacheKey, out string token))
+            {
+                token = await GetEncompassTokenAsync();
+                _cache.Set(TokenCacheKey, token, TimeSpan.FromMinutes(55));
+            }
+
+            string? pdfUrl = await DownloadLoanAttachmentsAsync(loanId, "Source");
+
+            if (string.IsNullOrWhiteSpace(pdfUrl))
+            {
+                return null;
+            }
+
+            byte[] fileBytes;
+
+            try
+            {
+                fileBytes = await _httpClient.GetByteArrayAsync(pdfUrl);
+            }
+            catch (Exception ex)
+            {
+                return null;
+            }
+
+            try
+            {
+
+                string targetDirectory = Path.Combine(_env.ContentRootPath, "LoanData");
+
+                if (!Directory.Exists(targetDirectory))
+                {
+                    Directory.CreateDirectory(targetDirectory);
+                }
+
+                string dateString = DateTime.Now.Date.ToString("yyyy-MM-dd");
+                string filePath = Path.Combine(targetDirectory, $"{loanId}_{dateString}.pdf");
+
+                string fullPath = Path.Combine(targetDirectory, filePath);
+                await File.WriteAllBytesAsync(filePath, fileBytes);
+            }
+            catch (Exception ex)
+            {
+            }
+
+            return fileBytes;
+        }
+
+
+        public async Task<string> DownloadLoanAttachmentsAsync(string loanId, string sourceEntityName)
+        {
+            string token;
+            if (!_cache.TryGetValue(TokenCacheKey, out token))
+            {
+                token = await GetEncompassTokenAsync();
+                _cache.Set(TokenCacheKey, token, TimeSpan.FromMinutes(55));
+            }
+
+            var attachments = await GetAttachmentsAsync(loanId, token);
+
+            if (attachments == null || attachments.Count == 0)
+                return string.Empty;
+
+            var filtered = attachments
+                .Where(a => a.AssignedTo?.EntityName?.Equals(sourceEntityName, StringComparison.OrdinalIgnoreCase) == true)
+                .ToList();
+
+            if (filtered.Count == 0)
+                return string.Empty;
+
+            var attachmentIds = filtered.Select(a => a.Id).ToList();
+
+            var downloadUrls = await GetAttachmentDownloadUrlsAsync(loanId, token, attachmentIds);
+            return downloadUrls;
+
+        }
+
+        public async Task<List<DocumentAttachment>> GetAttachmentsAsync(string loanId, string token)
+        {
+            var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"{_settings.EncompassApiBaseURL}/encompass/v3/loans/{loanId}/attachments?includeRemoved=true");
+
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.Add("Accept", "application/json");
+
+            var response = await _httpClient.SendAsync(request);
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            string json = await response.Content.ReadAsStringAsync();
+            return JsonSerializer.Deserialize<List<DocumentAttachment>>(json);
+        }
+
+        public async Task<string> GetAttachmentDownloadUrlsAsync(string loanId,string token,List<string> attachmentIds)
+        {
+            string downloadUrls = string.Empty;
+
+            var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{_settings.EncompassApiBaseURL}/encompass/v3/loans/{loanId}/attachmentDownloadUrl");
+
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.Add("Accept", "application/json");
+
+            var body = new
+            {
+                attachments = attachmentIds
+            };
+
+            request.Content = new StringContent(
+                JsonSerializer.Serialize(body),
+                Encoding.UTF8,
+                "application/json"
+            );
+
+            var response = await _httpClient.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+
+            string json = await response.Content.ReadAsStringAsync();
+
+            var result = JsonSerializer.Deserialize<AttachmentDownloadResponse>(json);
+
+            if (result?.Attachments == null || result.Attachments.Count == 0)
+                return downloadUrls;
+
+            foreach (var attachment in result.Attachments)
+            {
+                if (attachment.OriginalUrls != null && attachment.OriginalUrls.Count > 0)
+                {
+                    return attachment.OriginalUrls[0];
+                }
+            }
+
+            return downloadUrls;
+        }
+
 
     }
 }

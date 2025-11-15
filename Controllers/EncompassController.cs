@@ -54,5 +54,18 @@ namespace Encompass.DocumentSplitter.Integration.Controllers
 
             return Ok("Documents uploaded successfully to eFolder.");
         }
+        [HttpGet("GetLoanFile/{loanId}")]
+        public async Task<IActionResult> GetLoanFile(string loanId)
+        {
+            if (string.IsNullOrWhiteSpace(loanId))
+                return BadRequest("LoanId is required.");
+
+            var loan = await _encompassService.GetLoanFileAsync(loanId);
+
+            if (loan == null)
+                return NotFound($"Loan not found: {loanId}");
+
+            return Ok(loan);
+        }
     }
 }
