@@ -7,6 +7,6 @@ namespace Encompass.DocumentSplitter.Integration.Interfaces
         string HealthCheck();
         Task<string> GetEncompassTokenAsync();
         Task UploadToEfolderAsync(DocumentUploadRequest request);
-        Task<byte[]?> GetLoanFileAsync(string loanId);
+        Task<string> GetLoanFileAsync(string loanId);
     }
 }
