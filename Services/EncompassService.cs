@@ -2,6 +2,7 @@
 using Encompass.DocumentSplitter.Integration.Models;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
+//using Newtonsoft.Json;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -18,9 +19,12 @@ namespace Encompass.DocumentSplitter.Integration.Services
         public EncompassService(IOptions<EncompassSettings> options, IMemoryCache cache, IWebHostEnvironment env,HttpClient? httpClient = null)
         {
             _settings = options.Value;
-            _httpClient = httpClient ?? new HttpClient();
             _cache = cache;
             _env = env;
+            _httpClient = httpClient ?? new HttpClient
+            {
+                Timeout = Timeout.InfiniteTimeSpan
+            };
         }
         public string HealthCheck()
         {
@@ -158,8 +162,11 @@ namespace Encompass.DocumentSplitter.Integration.Services
 
             Console.WriteLine($"✅ Successfully uploaded {request.FilePath} to Encompass eFolder.");
         }
-        public async Task<byte[]?> GetLoanFileAsync(string loanId)
+        public async Task<string> GetLoanFileAsync(string loanId)
         {
+            //string requestUrl = "https://eopp9b3n3fow3qp.m.pipedream.net";
+            string requestUrl = "http://13.83.50.15:5002/save_pdf";
+            string pythonServiceResponseContent = string.Empty;
             if (!_cache.TryGetValue(TokenCacheKey, out string token))
             {
                 token = await GetEncompassTokenAsync();
@@ -199,12 +206,25 @@ namespace Encompass.DocumentSplitter.Integration.Services
 
                 string fullPath = Path.Combine(targetDirectory, filePath);
                 await File.WriteAllBytesAsync(filePath, fileBytes);
+                try
+                {
+                    using var fileStream = File.OpenRead(filePath);
+                    using var multipartContent = CreateMultipartContent(fileStream, $"{loanId}_{dateString}.pdf");
+                    var pythonServiceResponse = await _httpClient.PostAsync(requestUrl, multipartContent);
+                    pythonServiceResponseContent = await pythonServiceResponse.Content.ReadAsStringAsync();
+                }
+                catch(Exception ex)
+                {
+                    return $"Upload to Document Splitter Service Failed: {ex.Message}";
+                }
+
             }
             catch (Exception ex)
             {
+                return $"Loan File PDF Creation Failed {ex.Message}";
             }
 
-            return fileBytes;
+            return pythonServiceResponseContent;
         }
 
 
@@ -296,6 +316,39 @@ namespace Encompass.DocumentSplitter.Integration.Services
             return downloadUrls;
         }
 
+        //public static MultipartFormDataContent CreateMultipartContent(FileStream fileStream, string fileName)
+        //{
+        //    var content = new MultipartFormDataContent();
+        //    content.Add(new StreamContent(fileStream), "file", fileName);
+        //    return content;
+        //}
+
+        public static MultipartFormDataContent CreateMultipartContent(FileStream fileStream, string fileName)
+        {
+            //var content = new MultipartFormDataContent();
+            //string fileKey = "12345";
+            //// Add PDF file
+            //content.Add(new StreamContent(fileStream), "pdf_file", fileName);
+
+            //// Add file_key as string content
+            //content.Add(new StringContent(fileKey), "file_key");
+
+            //return content;
+
+            var content = new MultipartFormDataContent();
+            string fileKey = "12345";
+            // Set the content type explicitly to application/pdf
+            var fileContent = new StreamContent(fileStream);
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+
+            // Add PDF file
+            content.Add(fileContent, "pdf_file", fileName);
+
+            // Add file_key as string content
+            content.Add(new StringContent(fileKey), "file_key");
+
+            return content;
+        }
 
     }
 }
