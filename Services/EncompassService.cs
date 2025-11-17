@@ -21,10 +21,7 @@ namespace Encompass.DocumentSplitter.Integration.Services
             _settings = options.Value;
             _cache = cache;
             _env = env;
-            _httpClient = httpClient ?? new HttpClient
-            {
-                Timeout = Timeout.InfiniteTimeSpan
-            };
+            _httpClient = httpClient ?? new HttpClient();
         }
         public string HealthCheck()
         {
@@ -165,8 +162,9 @@ namespace Encompass.DocumentSplitter.Integration.Services
         public async Task<string> GetLoanFileAsync(string loanId)
         {
             //string requestUrl = "https://eopp9b3n3fow3qp.m.pipedream.net";
-            string requestUrl = "http://13.83.50.15:5002/save_pdf";
-            string pythonServiceResponseContent = string.Empty;
+            //string requestUrl = "http://13.83.50.15:5002/save_pdf";
+            string requestUrl = "http://10.10.0.2:5002/save_pdf";
+            //byte[] pythonServiceResponseContent = string.Empty;
             if (!_cache.TryGetValue(TokenCacheKey, out string token))
             {
                 token = await GetEncompassTokenAsync();
@@ -211,7 +209,12 @@ namespace Encompass.DocumentSplitter.Integration.Services
                     using var fileStream = File.OpenRead(filePath);
                     using var multipartContent = CreateMultipartContent(fileStream, $"{loanId}_{dateString}.pdf");
                     var pythonServiceResponse = await _httpClient.PostAsync(requestUrl, multipartContent);
-                    pythonServiceResponseContent = await pythonServiceResponse.Content.ReadAsStringAsync();
+                    pythonServiceResponse.EnsureSuccessStatusCode();
+                    var zipBytes = await pythonServiceResponse.Content.ReadAsByteArrayAsync();
+
+                    var zipPath = Path.Combine("LoanData", $"{loanId}_{dateString}.zip");
+                    Directory.CreateDirectory("LoanData");
+                    await File.WriteAllBytesAsync(zipPath, zipBytes);
                 }
                 catch(Exception ex)
                 {
@@ -224,7 +227,7 @@ namespace Encompass.DocumentSplitter.Integration.Services
                 return $"Loan File PDF Creation Failed {ex.Message}";
             }
 
-            return pythonServiceResponseContent;
+            return "asd";
         }
 
 
@@ -327,25 +330,27 @@ namespace Encompass.DocumentSplitter.Integration.Services
         {
             //var content = new MultipartFormDataContent();
             //string fileKey = "12345";
-            //// Add PDF file
-            //content.Add(new StreamContent(fileStream), "pdf_file", fileName);
+            //var fileContent = new StreamContent(fileStream);
+            //fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
 
-            //// Add file_key as string content
+            //content.Add(fileContent, "pdf_file", fileName);
+
             //content.Add(new StringContent(fileKey), "file_key");
 
             //return content;
 
             var content = new MultipartFormDataContent();
-            string fileKey = "12345";
-            // Set the content type explicitly to application/pdf
+
+            // PDF file
             var fileContent = new StreamContent(fileStream);
             fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
-
-            // Add PDF file
             content.Add(fileContent, "pdf_file", fileName);
 
-            // Add file_key as string content
-            content.Add(new StringContent(fileKey), "file_key");
+            // Other form fields (matching curl)
+            content.Add(new StringContent("12345"), "file_key");
+            content.Add(new StringContent("LoanData"), "input_path");
+            content.Add(new StringContent("LoanData"), "output_path");
+            content.Add(new StringContent("true"), "flag");
 
             return content;
         }
