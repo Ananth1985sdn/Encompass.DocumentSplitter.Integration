@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.IO.Compression;
 
 namespace Encompass.DocumentSplitter.Integration.Services
 {
@@ -16,12 +17,14 @@ namespace Encompass.DocumentSplitter.Integration.Services
         private readonly IMemoryCache _cache;
         private const string TokenCacheKey = "EncompassAccessToken";
         private readonly IWebHostEnvironment _env;
-        public EncompassService(IOptions<EncompassSettings> options, IMemoryCache cache, IWebHostEnvironment env,HttpClient? httpClient = null)
+        private readonly ILogger<EncompassService> _logger;
+        public EncompassService(IOptions<EncompassSettings> options, IMemoryCache cache, IWebHostEnvironment env, ILogger<EncompassService> logger,HttpClient? httpClient = null)
         {
             _settings = options.Value;
             _cache = cache;
             _env = env;
             _httpClient = httpClient ?? new HttpClient();
+            _logger = logger;
         }
         public string HealthCheck()
         {
@@ -200,10 +203,11 @@ namespace Encompass.DocumentSplitter.Integration.Services
                 }
 
                 string dateString = DateTime.Now.Date.ToString("yyyy-MM-dd");
-                string filePath = Path.Combine(targetDirectory, $"{loanId}_{dateString}.pdf");
 
+                string filePath = Path.Combine(targetDirectory, $"{loanId}_{dateString}.pdf");
                 string fullPath = Path.Combine(targetDirectory, filePath);
                 await File.WriteAllBytesAsync(filePath, fileBytes);
+                
                 try
                 {
                     using var fileStream = File.OpenRead(filePath);
@@ -212,9 +216,22 @@ namespace Encompass.DocumentSplitter.Integration.Services
                     pythonServiceResponse.EnsureSuccessStatusCode();
                     var zipBytes = await pythonServiceResponse.Content.ReadAsByteArrayAsync();
 
-                    var zipPath = Path.Combine("LoanData", $"{loanId}_{dateString}.zip");
-                    Directory.CreateDirectory("LoanData");
+                    var zipPath = Path.Combine(targetDirectory, $"{loanId}_{dateString}.zip");
+                    string fullZipPath = Path.Combine(targetDirectory, zipPath);
                     await File.WriteAllBytesAsync(zipPath, zipBytes);
+
+                    try
+                    {
+                        await UploadDocumentsFromZipAsync(zipPath, loanId);
+
+                        File.Delete(zipPath);
+                    }
+                    catch(Exception ex)
+                    {
+                        return $" Issue in Extract Zip File: {ex.Message}";
+                    }
+                    
+
                 }
                 catch(Exception ex)
                 {
@@ -227,10 +244,8 @@ namespace Encompass.DocumentSplitter.Integration.Services
                 return $"Loan File PDF Creation Failed {ex.Message}";
             }
 
-            return "asd";
+            return "Upload and processing completed successfully.";
         }
-
-
         public async Task<string> DownloadLoanAttachmentsAsync(string loanId, string sourceEntityName)
         {
             string token;
@@ -258,7 +273,6 @@ namespace Encompass.DocumentSplitter.Integration.Services
             return downloadUrls;
 
         }
-
         public async Task<List<DocumentAttachment>> GetAttachmentsAsync(string loanId, string token)
         {
             var request = new HttpRequestMessage(
@@ -275,7 +289,6 @@ namespace Encompass.DocumentSplitter.Integration.Services
             string json = await response.Content.ReadAsStringAsync();
             return JsonSerializer.Deserialize<List<DocumentAttachment>>(json);
         }
-
         public async Task<string> GetAttachmentDownloadUrlsAsync(string loanId,string token,List<string> attachmentIds)
         {
             string downloadUrls = string.Empty;
@@ -318,14 +331,6 @@ namespace Encompass.DocumentSplitter.Integration.Services
 
             return downloadUrls;
         }
-
-        //public static MultipartFormDataContent CreateMultipartContent(FileStream fileStream, string fileName)
-        //{
-        //    var content = new MultipartFormDataContent();
-        //    content.Add(new StreamContent(fileStream), "file", fileName);
-        //    return content;
-        //}
-
         public static MultipartFormDataContent CreateMultipartContent(FileStream fileStream, string fileName)
         {
             //var content = new MultipartFormDataContent();
@@ -353,6 +358,44 @@ namespace Encompass.DocumentSplitter.Integration.Services
             content.Add(new StringContent("true"), "flag");
 
             return content;
+        }
+        private async Task UploadDocumentsFromZipAsync(string zipFilePath, string loanId)
+        {
+            string extractPath = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(zipFilePath));
+            if (Directory.Exists(extractPath))
+                Directory.Delete(extractPath, true);
+            ZipFile.ExtractToDirectory(zipFilePath, extractPath);
+
+            _logger.LogInformation("Extracted ZIP to {ExtractPath}", extractPath);
+
+            foreach (var folder in Directory.GetDirectories(extractPath, "*", SearchOption.AllDirectories))
+            {
+                string categoryName = new DirectoryInfo(folder).Name;
+
+                foreach (var pdfFile in Directory.GetFiles(folder, "*.pdf", SearchOption.TopDirectoryOnly))
+                {
+                    try
+                    {
+                        _logger.LogInformation("Uploading {File} under category {Category}", pdfFile, categoryName);
+
+                        var uploadRequest = new DocumentUploadRequest
+                        {
+                            LoanId = loanId,
+                            CategoryName = categoryName,
+                            FilePath = pdfFile
+                        };
+
+                        await UploadToEfolderAsync(uploadRequest);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error uploading file {File} - {loanId}", pdfFile,loanId);
+                    }
+                }
+            }
+
+            Directory.Delete(extractPath, true);
+            _logger.LogInformation("Cleaned up extracted folder {ExtractPath}", extractPath);
         }
 
     }
