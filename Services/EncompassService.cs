@@ -18,7 +18,7 @@ namespace Encompass.DocumentSplitter.Integration.Services
         private const string TokenCacheKey = "EncompassAccessToken";
         private readonly IWebHostEnvironment _env;
         private readonly ILogger<EncompassService> _logger;
-        public EncompassService(IOptions<EncompassSettings> options, IMemoryCache cache, IWebHostEnvironment env, ILogger<EncompassService> logger,HttpClient? httpClient = null)
+        public EncompassService(IOptions<EncompassSettings> options, IMemoryCache cache, IWebHostEnvironment env, ILogger<EncompassService> logger, HttpClient? httpClient = null)
         {
             _settings = options.Value;
             _cache = cache;
@@ -71,15 +71,44 @@ namespace Encompass.DocumentSplitter.Integration.Services
             if (request == null)
                 throw new ArgumentNullException(nameof(request));
 
-            string token;
-            if (!_cache.TryGetValue(TokenCacheKey, out token))
+            if (!_cache.TryGetValue(TokenCacheKey, out string token))
             {
                 token = await GetEncompassTokenAsync();
                 _cache.Set(TokenCacheKey, token, TimeSpan.FromMinutes(55));
             }
+           
+            string getDocsUrl =
+                $"{_settings.EncompassApiBaseURL}/encompass/v3/loans/{request.LoanId}/documents";
 
-            var documentPayload = new[]
+            using var getDocsReq = new HttpRequestMessage(HttpMethod.Get, getDocsUrl);
+            getDocsReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+            var docsResponse = await _httpClient.SendAsync(getDocsReq);
+            docsResponse.EnsureSuccessStatusCode();
+
+            var docsJson = await docsResponse.Content.ReadAsStringAsync();
+            using var docs = JsonDocument.Parse(docsJson);
+
+            string? existingDocumentId = null;
+
+            foreach (var doc in docs.RootElement.EnumerateArray())
             {
+                string title = doc.GetProperty("title").GetString() ?? string.Empty;
+
+                if (title.Equals(request.CategoryName, StringComparison.OrdinalIgnoreCase))
+                {
+                    existingDocumentId = doc.GetProperty("id").GetString();
+                    break;
+                }
+            }
+
+            string documentEntityId = existingDocumentId ?? string.Empty;
+
+            if (existingDocumentId == null)
+            {
+
+                var documentPayload = new[]
+                {
                 new
                 {
                     title = request.CategoryName,
@@ -87,23 +116,22 @@ namespace Encompass.DocumentSplitter.Integration.Services
                 }
             };
 
-            var createDocUrl = $"{_settings.EncompassApiBaseURL}/encompass/v3/loans/{request.LoanId}/documents?action=add&view=entity";
+                var createDocUrl =
+                    $"{_settings.EncompassApiBaseURL}/encompass/v3/loans/{request.LoanId}/documents?action=add&view=entity";
 
-            using var createRequest = new HttpRequestMessage(HttpMethod.Patch, createDocUrl);
-            createRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            createRequest.Content = new StringContent(JsonSerializer.Serialize(documentPayload), Encoding.UTF8, "application/json");
+                using var createRequest = new HttpRequestMessage(HttpMethod.Patch, createDocUrl);
+                createRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                createRequest.Content = new StringContent(JsonSerializer.Serialize(documentPayload), Encoding.UTF8, "application/json");
 
-            var createResponse = await _httpClient.SendAsync(createRequest);
-            if (!createResponse.IsSuccessStatusCode)
-            {
-                var errorBody = await createResponse.Content.ReadAsStringAsync();
-                throw new HttpRequestException($"Failed to create eFolder document: {createResponse.StatusCode}, {errorBody}");
+                var createResponse = await _httpClient.SendAsync(createRequest);
+                createResponse.EnsureSuccessStatusCode();
+
+                var createdDocJson = await createResponse.Content.ReadAsStringAsync();
+                using var docJson = JsonDocument.Parse(createdDocJson);
+                documentEntityId = docJson.RootElement[0].GetProperty("id").GetString();
             }
 
-            var createdDocJson = await createResponse.Content.ReadAsStringAsync();
-            using var docJson = JsonDocument.Parse(createdDocJson);
-            var documentEntityId = docJson.RootElement[0].GetProperty("id").GetString();
-
+           
             var uploadMeta = new
             {
                 file = new
@@ -112,7 +140,7 @@ namespace Encompass.DocumentSplitter.Integration.Services
                     name = Path.GetFileName(request.FilePath),
                     size = new FileInfo(request.FilePath).Length
                 },
-                title = request.CategoryName,
+                title = Path.GetFileName(request.FilePath),
                 assignTo = new
                 {
                     entityId = documentEntityId,
@@ -120,53 +148,43 @@ namespace Encompass.DocumentSplitter.Integration.Services
                 }
             };
 
-            var uploadUrlRequest = new HttpRequestMessage(
+            var uploadUrlReq = new HttpRequestMessage(
                 HttpMethod.Post,
                 $"{_settings.EncompassApiBaseURL}/encompass/v3/loans/{request.LoanId}/attachmentUploadUrl"
             );
-            uploadUrlRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            uploadUrlRequest.Content = new StringContent(JsonSerializer.Serialize(uploadMeta), Encoding.UTF8, "application/json");
 
-            var uploadUrlResponse = await _httpClient.SendAsync(uploadUrlRequest);
-            if (!uploadUrlResponse.IsSuccessStatusCode)
-            {
-                var errorBody = await uploadUrlResponse.Content.ReadAsStringAsync();
-                throw new HttpRequestException($"Failed to get upload URL: {uploadUrlResponse.StatusCode}, {errorBody}");
-            }
+            uploadUrlReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            uploadUrlReq.Content = new StringContent(JsonSerializer.Serialize(uploadMeta), Encoding.UTF8, "application/json");
+
+            var uploadUrlResponse = await _httpClient.SendAsync(uploadUrlReq);
+            uploadUrlResponse.EnsureSuccessStatusCode();
 
             var uploadUrlJson = await uploadUrlResponse.Content.ReadAsStringAsync();
             using var uploadDoc = JsonDocument.Parse(uploadUrlJson);
             var uploadUrl = uploadDoc.RootElement.GetProperty("uploadUrl").GetString();
             var authHeader = uploadDoc.RootElement.GetProperty("authorizationHeader").GetString();
+        
 
             using var fileStream = File.OpenRead(request.FilePath);
             using var uploadClient = new HttpClient();
-            using var uploadRequest = new HttpRequestMessage(HttpMethod.Put, uploadUrl)
+            using var uploadReq = new HttpRequestMessage(HttpMethod.Put, uploadUrl)
             {
                 Content = new StreamContent(fileStream)
             };
 
-            uploadRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+            uploadReq.Content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+            uploadReq.Headers.Add("Authorization", authHeader);
 
-            uploadRequest.Headers.Add(
-                "Authorization",
-                authHeader
-            );
+            var uploadResponse = await uploadClient.SendAsync(uploadReq);
+            uploadResponse.EnsureSuccessStatusCode();
 
-            var uploadResponse = await uploadClient.SendAsync(uploadRequest);
-            if (!uploadResponse.IsSuccessStatusCode)
-            {
-                var errorBody = await uploadResponse.Content.ReadAsStringAsync();
-                throw new HttpRequestException($"Failed to upload file: {uploadResponse.StatusCode}, {errorBody}");
-            }
-
-            Console.WriteLine($"✅ Successfully uploaded {request.FilePath} to Encompass eFolder.");
+            Console.WriteLine($"✅ Successfully uploaded to eFolder → DocumentId: {documentEntityId}");
         }
         public async Task<string> GetLoanFileAsync(string loanId)
         {
             //string requestUrl = "https://eopp9b3n3fow3qp.m.pipedream.net";
             //string requestUrl = "http://13.83.50.15:5002/save_pdf";
-            string requestUrl = "http://10.10.0.2:5002/save_pdf";
+            string requestUrl = "http://10.10.0.4:5002/save_pdf";
             //byte[] pythonServiceResponseContent = string.Empty;
             if (!_cache.TryGetValue(TokenCacheKey, out string token))
             {
@@ -207,7 +225,7 @@ namespace Encompass.DocumentSplitter.Integration.Services
                 string filePath = Path.Combine(targetDirectory, $"{loanId}_{dateString}.pdf");
                 string fullPath = Path.Combine(targetDirectory, filePath);
                 await File.WriteAllBytesAsync(filePath, fileBytes);
-                
+
                 try
                 {
                     using var fileStream = File.OpenRead(filePath);
@@ -226,14 +244,14 @@ namespace Encompass.DocumentSplitter.Integration.Services
 
                         File.Delete(zipPath);
                     }
-                    catch(Exception ex)
+                    catch (Exception ex)
                     {
                         return $" Issue in Extract Zip File: {ex.Message}";
                     }
-                    
+
 
                 }
-                catch(Exception ex)
+                catch (Exception ex)
                 {
                     return $"Upload to Document Splitter Service Failed: {ex.Message}";
                 }
@@ -289,7 +307,7 @@ namespace Encompass.DocumentSplitter.Integration.Services
             string json = await response.Content.ReadAsStringAsync();
             return JsonSerializer.Deserialize<List<DocumentAttachment>>(json);
         }
-        public async Task<string> GetAttachmentDownloadUrlsAsync(string loanId,string token,List<string> attachmentIds)
+        public async Task<string> GetAttachmentDownloadUrlsAsync(string loanId, string token, List<string> attachmentIds)
         {
             string downloadUrls = string.Empty;
 
@@ -389,7 +407,7 @@ namespace Encompass.DocumentSplitter.Integration.Services
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error uploading file {File} - {loanId}", pdfFile,loanId);
+                        _logger.LogError(ex, "Error uploading file {File} - {loanId}", pdfFile, loanId);
                     }
                 }
             }
