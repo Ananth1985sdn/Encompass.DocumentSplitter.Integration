@@ -234,6 +234,29 @@ namespace Encompass.DocumentSplitter.Integration.Services
                     pythonServiceResponse.EnsureSuccessStatusCode();
                     var zipBytes = await pythonServiceResponse.Content.ReadAsByteArrayAsync();
 
+                    var contentType = pythonServiceResponse.Content.Headers.ContentType?.MediaType;
+
+                    if (contentType != null && !contentType.Contains("zip", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return $"Invalid Response: Expected ZIP but got Content-Type: {contentType}";
+                    }
+
+                    bool isZip = zipBytes.Length > 4 &&
+                                 zipBytes[0] == 0x50 &&
+                                 zipBytes[1] == 0x4B &&
+                                 zipBytes[2] == 0x03 &&
+                                 zipBytes[3] == 0x04;
+
+                    if (!isZip)
+                    {
+                        return "Invalid Response: ZIP signature not found. Response is not a ZIP file.";
+                    }
+
+                    if (zipBytes.Length < 22)
+                    {
+                        return "Invalid Response: ZIP file too small.";
+                    }
+
                     var zipPath = Path.Combine(targetDirectory, $"{loanId}_{dateString}.zip");
                     string fullZipPath = Path.Combine(targetDirectory, zipPath);
                     await File.WriteAllBytesAsync(zipPath, zipBytes);
