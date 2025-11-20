@@ -7,6 +7,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.IO.Compression;
+using PdfSharp.Pdf.IO;
 
 namespace Encompass.DocumentSplitter.Integration.Services
 {
@@ -184,8 +185,7 @@ namespace Encompass.DocumentSplitter.Integration.Services
         {
             //string requestUrl = "https://eopp9b3n3fow3qp.m.pipedream.net";
             //string requestUrl = "http://13.83.50.15:5002/save_pdf";
-            string requestUrl = "http://10.10.0.4:5002/save_pdf";
-            //byte[] pythonServiceResponseContent = string.Empty;
+            string requestUrl = "http://10.10.0.2:5002/save_pdf";
             if (!_cache.TryGetValue(TokenCacheKey, out string token))
             {
                 token = await GetEncompassTokenAsync();
@@ -374,25 +374,12 @@ namespace Encompass.DocumentSplitter.Integration.Services
         }
         public static MultipartFormDataContent CreateMultipartContent(FileStream fileStream, string fileName)
         {
-            //var content = new MultipartFormDataContent();
-            //string fileKey = "12345";
-            //var fileContent = new StreamContent(fileStream);
-            //fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
-
-            //content.Add(fileContent, "pdf_file", fileName);
-
-            //content.Add(new StringContent(fileKey), "file_key");
-
-            //return content;
-
             var content = new MultipartFormDataContent();
 
-            // PDF file
             var fileContent = new StreamContent(fileStream);
             fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
             content.Add(fileContent, "pdf_file", fileName);
 
-            // Other form fields (matching curl)
             content.Add(new StringContent("12345"), "file_key");
             content.Add(new StringContent("LoanData"), "input_path");
             content.Add(new StringContent("LoanData"), "output_path");
@@ -417,6 +404,12 @@ namespace Encompass.DocumentSplitter.Integration.Services
                 {
                     try
                     {
+                        if (!IsPdfValid(pdfFile))
+                        {
+                            _logger.LogWarning("Corrupted PDF skipped: {File}", pdfFile);
+                            continue;
+                        }
+
                         _logger.LogInformation("Uploading {File} under category {Category}", pdfFile, categoryName);
 
                         var uploadRequest = new DocumentUploadRequest
@@ -437,6 +430,22 @@ namespace Encompass.DocumentSplitter.Integration.Services
 
             Directory.Delete(extractPath, true);
             _logger.LogInformation("Cleaned up extracted folder {ExtractPath}", extractPath);
+        }
+
+        private bool IsPdfValid(string pdfPath)
+        {
+            try
+            {
+                using (var doc = PdfReader.Open(pdfPath, PdfDocumentOpenMode.ReadOnly))
+                {
+                    int pages = doc.PageCount;
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
     }
